@@ -1,0 +1,361 @@
+{
+  "id": "lendloopOverdue1",
+  "name": "LendLoop 02 - Overdue Reminders",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "lendloopErrorWf1"
+  },
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "bf586912-3a55-411a-b327-46515382e4f0",
+      "name": "Daily 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f6964f75-fab3-40e3-8d25-d8144b495656",
+      "name": "Run Now (manual)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET is not set');\n// Contract: hex(HMAC_SHA256(secret, `${timestamp}.${rawBody}`)), timestamp = unix seconds.\nconst sign = (rawBody) => {\n  const timestamp = Math.floor(Date.now() / 1000).toString();\n  const signature = crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');\n  return { timestamp, signature };\n};\n\n// GET has no body: the signed string is `${timestamp}.` (empty rawBody).\nreturn [{ json: sign('') }];\n"
+      },
+      "id": "447cddb1-7f9b-4aaa-b56d-d9059795042d",
+      "name": "Sign GET",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.CONVEX_HTTP_BASE_URL }}/api/automation/overdue-loans",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LendLoop-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "aff15ea9-d866-46ce-82ad-6fba990f2663",
+      "name": "Fetch Overdue Loans",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "loans",
+        "options": {}
+      },
+      "id": "43c083be-f6ce-4c12-8df1-969774b70416",
+      "name": "Split Loans",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((item) => ({\n  json: {\n    loanId: item.json.loanId,\n    daysOverdue: item.json.daysOverdue,\n    recipient: item.json.recipientDisplayName,\n    message: `Hi ${item.json.recipientDisplayName}, the ${item.json.toolName} was due back on ${item.json.endDate}. Please return it soon.`,\n    ref: item.json.loanId,\n  },\n}));\n"
+      },
+      "id": "54b662c7-7fbe-4786-9bff-a51cc0a6cea6",
+      "name": "Build Reminder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9d51bea1-2024-4b04-ad2f-1a6cff667c8c",
+              "leftValue": "={{ $env.MOCK_NOTIFY_URL || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8562d72f-37fd-432a-8e51-637268d941a0",
+      "name": "Notify URL Set?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MOCK_NOTIFY_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ recipient: $json.recipient, message: $json.message, ref: $json.ref }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "65c90ac4-3f56-47a8-9553-6e178463d865",
+      "name": "Send Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// No MOCK_NOTIFY_URL configured: \"deliver\" by logging (visible with CODE_ENABLE_STDOUT=true).\nfor (const item of $input.all()) console.log('[lendloop mock-notify]', JSON.stringify(item.json));\nreturn $input.all().map((item) => ({ json: { ...item.json, delivered: 'mock-log' } }));\n"
+      },
+      "id": "717d8b7f-7d6d-4971-929d-7b1e46cf292b",
+      "name": "Log Mock Reminder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET is not set');\n// Contract: hex(HMAC_SHA256(secret, `${timestamp}.${rawBody}`)), timestamp = unix seconds.\nconst sign = (rawBody) => {\n  const timestamp = Math.floor(Date.now() / 1000).toString();\n  const signature = crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');\n  return { timestamp, signature };\n};\n\n// Date comes from Convex (UTC), so retries and re-runs on the same day reuse the same key.\nconst date = $('Fetch Overdue Loans').first().json.date;\nreturn $input.all().map((item, i) => {\n  const r = $('Build Reminder').itemMatching(i).json;\n  const failed = Boolean(item.json.error);\n  const body = JSON.stringify({\n    idempotencyKey: 'overdue:' + r.loanId + ':' + date,\n    loanId: r.loanId,\n    eventType: 'overdue_reminder',\n    status: failed ? 'failed' : 'sent',\n    summary: failed ? 'Overdue reminder failed' : 'Overdue reminder sent (' + r.daysOverdue + ' day(s) late)',\n  });\n  return { json: { body, ...sign(body) } };\n});\n"
+      },
+      "id": "fc907e29-5fdb-450f-9fe7-e8010aab29a6",
+      "name": "Sign Write-backs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CONVEX_HTTP_BASE_URL }}/api/automation/reminder-status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LendLoop-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "3fed2ca7-b358-47aa-83a9-603e25d344d6",
+      "name": "Write-back to Convex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Daily 09:00": {
+      "main": [
+        [
+          {
+            "node": "Sign GET",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Now (manual)": {
+      "main": [
+        [
+          {
+            "node": "Sign GET",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign GET": {
+      "main": [
+        [
+          {
+            "node": "Fetch Overdue Loans",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Overdue Loans": {
+      "main": [
+        [
+          {
+            "node": "Split Loans",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Loans": {
+      "main": [
+        [
+          {
+            "node": "Build Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Reminder": {
+      "main": [
+        [
+          {
+            "node": "Notify URL Set?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify URL Set?": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Mock Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reminder": {
+      "main": [
+        [
+          {
+            "node": "Sign Write-backs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Mock Reminder": {
+      "main": [
+        [
+          {
+            "node": "Sign Write-backs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign Write-backs": {
+      "main": [
+        [
+          {
+            "node": "Write-back to Convex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

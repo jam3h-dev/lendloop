@@ -1,0 +1,390 @@
+{
+  "id": "lendloopRequest1",
+  "name": "LendLoop 01 - Request Notification",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "lendloopErrorWf1"
+  },
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lendloop-request",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "396fee15-b23f-4beb-b4de-f5485feb98d4",
+      "name": "Convex Loan Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "6f1c2a4e-9b7d-4c1e-8a35-2f6d8b1c0e41"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst signature = String(headers['x-lendloop-signature'] || '').trim().toLowerCase();\nconst timestamp = String(headers['x-lendloop-timestamp'] || '').trim();\nconst fail = (reason) => [{ json: { valid: false, reason } }];\n\nif (!secret) return fail('server_misconfigured');\nif (!signature || !timestamp) return fail('missing_signature_headers');\nif (!/^\\d{1,12}$/.test(timestamp)) return fail('invalid_timestamp');\n// Replay protection: reject timestamps more than 5 minutes away from now.\nif (Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp)) > 300) return fail('stale_timestamp');\n\n// Verify the exact bytes Convex signed (Webhook node \"Raw Body\" option).\nif (!item.binary || !item.binary.data) return fail('raw_body_missing');\nconst rawBody = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n\nconst expected = Buffer.from(crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex'));\nconst given = Buffer.from(signature);\nif (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return fail('bad_signature');\n\nlet payload;\ntry { payload = JSON.parse(rawBody); } catch { return fail('invalid_json'); }\nconst fields = ['eventId', 'eventType', 'loanId', 'toolName', 'status', 'startDate', 'endDate', 'recipientDisplayName'];\nfor (const f of fields) if (typeof payload[f] !== 'string') return fail('missing_' + f);\n// Data minimization: keep only allow-listed fields, drop anything else.\nreturn [{ json: { valid: true, payload: Object.fromEntries(fields.map((f) => [f, payload[f]])) } }];\n"
+      },
+      "id": "b7bd730e-7d48-4e3a-99a6-281d4e4ffad2",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5793c6fc-bba5-4faf-913e-03801d2bf810",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "363545e3-1718-4191-b404-52339db636bd",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "85970f43-761b-4fd1-9c16-9dbd73fc37b6",
+      "name": "Respond 202",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"unauthorized\" }) }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "cb89f38d-9a47-4953-bd05-0d55d736719c",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Rejected unsigned or invalid webhook: {{ $('Verify Signature').first().json.reason }}"
+      },
+      "id": "fb01aad7-2630-48a0-a789-ca684d84bbe3",
+      "name": "Reject (alert)",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        880,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $('Verify Signature').first().json.payload;\nconst range = `${p.startDate} to ${p.endDate}`;\nconst messages = {\n  loan_requested: `Hi ${p.recipientDisplayName}, a neighbor asked to borrow your ${p.toolName} (${range}).`,\n  loan_approved: `Hi ${p.recipientDisplayName}, your request for ${p.toolName} (${range}) was approved.`,\n  loan_declined: `Hi ${p.recipientDisplayName}, your request for ${p.toolName} was declined.`,\n  loan_returned: `Hi ${p.recipientDisplayName}, thanks for returning the ${p.toolName}.`,\n};\nreturn [{\n  json: {\n    recipient: p.recipientDisplayName,\n    message: messages[p.eventType] || `Update on ${p.toolName}: ${p.status}.`,\n    ref: p.eventId,\n  },\n}];\n"
+      },
+      "id": "6119b761-b0ee-4b84-bfe0-aab562a6dd99",
+      "name": "Build Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "46e2b9b6-1742-4520-a321-5551ed3493eb",
+              "leftValue": "={{ $env.MOCK_NOTIFY_URL || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e92bc525-aad7-4a60-bc91-3beb81312db7",
+      "name": "Notify URL Set?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MOCK_NOTIFY_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ recipient: $json.recipient, message: $json.message, ref: $json.ref }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "fdaac803-433f-4de3-ada8-ff48b33b068c",
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// No MOCK_NOTIFY_URL configured: \"deliver\" by logging (visible with CODE_ENABLE_STDOUT=true).\nfor (const item of $input.all()) console.log('[lendloop mock-notify]', JSON.stringify(item.json));\nreturn $input.all().map((item) => ({ json: { ...item.json, delivered: 'mock-log' } }));\n"
+      },
+      "id": "93cf1128-03d2-4d97-8357-2963526e0d6c",
+      "name": "Log Mock Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET is not set');\n// Contract: hex(HMAC_SHA256(secret, `${timestamp}.${rawBody}`)), timestamp = unix seconds.\nconst sign = (rawBody) => {\n  const timestamp = Math.floor(Date.now() / 1000).toString();\n  const signature = crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');\n  return { timestamp, signature };\n};\n\nconst p = $('Verify Signature').first().json.payload;\nconst failed = Boolean($input.first().json.error);\nconst body = JSON.stringify({\n  idempotencyKey: 'notif:' + p.eventId,\n  loanId: p.loanId,\n  eventType: 'request_notification',\n  status: failed ? 'failed' : 'sent',\n  summary: (failed ? 'Notification failed' : 'Notification sent') + ' (' + p.eventType.replace('loan_', '') + ')',\n});\nreturn [{ json: { body, ...sign(body) } }];\n"
+      },
+      "id": "aa8b18a7-ff97-42ce-8ff7-ce70f0a75df9",
+      "name": "Sign Write-back",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CONVEX_HTTP_BASE_URL }}/api/automation/reminder-status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LendLoop-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "bfab80b3-f22a-48b0-9398-287193a74088",
+      "name": "Write-back to Convex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Convex Loan Event": {
+      "main": [
+        [
+          {
+            "node": "Verify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Signature": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Respond 202",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 401": {
+      "main": [
+        [
+          {
+            "node": "Reject (alert)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 202": {
+      "main": [
+        [
+          {
+            "node": "Build Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Notification": {
+      "main": [
+        [
+          {
+            "node": "Notify URL Set?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify URL Set?": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Mock Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Notification": {
+      "main": [
+        [
+          {
+            "node": "Sign Write-back",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Mock Notification": {
+      "main": [
+        [
+          {
+            "node": "Sign Write-back",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign Write-back": {
+      "main": [
+        [
+          {
+            "node": "Write-back to Convex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

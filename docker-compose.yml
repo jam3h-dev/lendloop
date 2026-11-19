@@ -1,0 +1,43 @@
+# Self-hosted n8n for LendLoop automations.
+#   cp .env.example .env   # fill the n8n section
+#   docker compose up -d
+#   docker compose exec n8n n8n import:workflow --separate --input=/workflows
+services:
+  n8n:
+    image: n8nio/n8n:2.48.6 # pinned; bump deliberately after reading release notes
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # --- LendLoop (values come from .env, never from the workflow JSON) ---
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:?Set N8N_WEBHOOK_SECRET in .env}
+      CONVEX_HTTP_BASE_URL: ${CONVEX_HTTP_BASE_URL:?Set CONVEX_HTTP_BASE_URL in .env}
+      MOCK_NOTIFY_URL: ${MOCK_NOTIFY_URL:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      # --- n8n runtime ---
+      # Workflows read the values above via $env; n8n blocks $env unless this is "false".
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # Code nodes need node:crypto for HMAC-SHA256.
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      # Code-node console output (mock notifications, alerts) goes to `docker compose logs n8n`.
+      CODE_ENABLE_STDOUT: "true"
+      WEBHOOK_URL: ${N8N_PUBLIC_URL:-http://localhost:5678/}
+      GENERIC_TIMEZONE: UTC
+      TZ: UTC
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+    extra_hosts:
+      # Lets n8n reach a Convex local backend on the host (http://host.docker.internal:3211).
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  n8n_data:
