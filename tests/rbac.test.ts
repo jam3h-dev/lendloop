@@ -81,8 +81,14 @@ describe("authorization policy", () => {
     const today = "2026-05-10";
     expect(() => assertValidDateRange("2026-05-12", "2026-05-11", today)).toThrow(/End date/);
     expect(() => assertValidDateRange("2026-02-30", "2026-03-01", today)).toThrow(/valid/);
-    expect(() => assertValidDateRange("2026-05-09", "2026-05-11", today)).toThrow(/past/);
     expect(() => assertValidDateRange("2026-05-10", "2026-05-10", today)).not.toThrow();
+    // 1 day of grace: a user west of UTC whose local "today" is still UTC yesterday.
+    expect(() => assertValidDateRange("2026-05-09", "2026-05-11", today)).not.toThrow();
+    expect(() => assertValidDateRange("2026-05-08", "2026-05-11", today)).toThrow(/past/);
+    // Grace crosses month and year boundaries correctly.
+    expect(() => assertValidDateRange("2026-02-28", "2026-03-02", "2026-03-01")).not.toThrow();
+    expect(() => assertValidDateRange("2025-12-31", "2026-01-02", "2026-01-01")).not.toThrow();
+    expect(() => assertValidDateRange("2025-12-30", "2026-01-02", "2026-01-01")).toThrow(/past/);
     expect(rangesOverlap("2026-05-01", "2026-05-05", "2026-05-05", "2026-05-09")).toBe(true);
     expect(rangesOverlap("2026-05-01", "2026-05-04", "2026-05-05", "2026-05-09")).toBe(false);
   });
@@ -152,6 +158,29 @@ describe("Convex functions enforce RBAC server-side", () => {
 
     await adminUser.mutation(api.admin.setTrustedLender, { userId: ownerMe!._id, trusted: true });
     expect((await owner.query(api.users.me, {}))?.trustedLender).toBe(true);
+  });
+
+  it("removing an ID from ADMIN_CLERK_IDS revokes admin at once, before any re-sync", async () => {
+    const t = newBackend();
+    const { adminUser, owner, toolId } = await seed(t);
+    const ownerMe = await owner.query(api.users.me, {});
+    expect((await adminUser.query(api.users.me, {}))?.role).toBe("admin");
+
+    process.env.ADMIN_CLERK_IDS = ""; // admin removed; users.store is NOT called again
+
+    await expect(adminUser.query(api.admin.listAllLoans, {})).rejects.toThrow(/Admin only/);
+    await expect(adminUser.query(api.admin.listLenders, {})).rejects.toThrow(/Admin only/);
+    await expect(
+      adminUser.mutation(api.admin.setTrustedLender, { userId: ownerMe!._id, trusted: true }),
+    ).rejects.toThrow(/Admin only/);
+    await expect(adminUser.mutation(api.tools.deleteTool, { toolId })).rejects.toThrow(/only delete your own/);
+    expect((await adminUser.query(api.users.me, {}))?.role).toBe("user");
+
+    // The stored row still says "admin": access no longer depends on it.
+    const row = await t.run((ctx) =>
+      ctx.db.query("users").withIndex("by_clerkId", (q) => q.eq("clerkId", identities.admin.subject)).unique(),
+    );
+    expect(row?.role).toBe("admin");
   });
 
   it("an admin can remove any listing", async () => {

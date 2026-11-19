@@ -1,7 +1,9 @@
 import type { AuthConfig } from "convex/server";
 
-// Clerk JWT template must be named "convex". Set CLERK_JWT_ISSUER_DOMAIN on
-// the Convex deployment (npx convex env set CLERK_JWT_ISSUER_DOMAIN https://xxx.clerk.accounts.dev).
+// Clerk session tokens must carry aud "convex" (applicationID below); see the
+// session token claims in README step 2. CLERK_JWT_ISSUER_DOMAIN is the Clerk
+// Frontend API URL:
+//   npx convex env set CLERK_JWT_ISSUER_DOMAIN https://xxx.clerk.accounts.dev
 export default {
   providers: [
     {

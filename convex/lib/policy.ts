@@ -69,7 +69,11 @@ export function todayUtc(nowMs = Date.now()): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
-/** Throws PolicyError when the range is invalid. ISO strings compare lexically. */
+/**
+ * Throws PolicyError when the range is invalid. ISO strings compare lexically.
+ * The browser picks dates in the user's LOCAL time, which west of UTC can be
+ * one day behind UTC. One day of grace keeps "today" valid everywhere.
+ */
 export function assertValidDateRange(
   startDate: string,
   endDate: string,
@@ -81,7 +85,8 @@ export function assertValidDateRange(
   if (endDate < startDate) {
     throw new PolicyError("End date must be on or after start date.");
   }
-  if (startDate < today) {
+  const earliest = todayUtc(Date.parse(`${today}T00:00:00Z`) - 86_400_000);
+  if (startDate < earliest) {
     throw new PolicyError("Start date cannot be in the past.");
   }
 }

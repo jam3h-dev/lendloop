@@ -119,18 +119,22 @@ Put the output in `.env` as `N8N_WEBHOOK_SECRET`. Step 3 copies this same value 
 
 1. Create an application in the [Clerk dashboard](https://dashboard.clerk.com).
 2. Copy the **Publishable key** to `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and the **Secret key** to `CLERK_SECRET_KEY` in `.env`.
-3. Open https://dashboard.clerk.com/apps/setup/convex and select **Activate Convex integration**. Clerk session tokens then carry `aud: "convex"`, and `ConvexProviderWithClerk` sends them to Convex. Copy the **Frontend API URL**, for example `https://your-app.clerk.accounts.dev`. You need it in step 3.
-4. Add name claims to the session token. Clerk's default session token has no name fields, so without this step every user shows as "Neighbor". In the Clerk Dashboard, go to **Sessions > Customize session token** and add these claims:
+3. Copy the **Frontend API URL** from the **API keys** page, for example `https://your-app.clerk.accounts.dev`. You need it in step 3.
+4. Set the session token claims. In the Clerk Dashboard, go to **Sessions > Customize session token** and set exactly these 4 claims. This is the setup that was tested live:
 
    ```json
    {
+     "aud": "convex",
      "given_name": "{{user.first_name}}",
      "family_name": "{{user.last_name}}",
      "nickname": "{{user.username}}"
    }
    ```
 
-   Convex maps these claims to `identity.givenName`, `identity.familyName` and `identity.nickname`. LendLoop stores only a short form such as "Ava K.". It never stores the full name or the email.
+   - `aud: "convex"` makes Convex accept the token (`applicationID: "convex"` in `convex/auth.config.ts`). With it, `ConvexProviderWithClerk` sends the normal session token, so no JWT template is needed. Do not remove it when you edit the claims.
+   - The name claims map to `identity.givenName`, `identity.familyName` and `identity.nickname`. LendLoop stores only a short form such as "Ava K.". It never stores the full name or the email.
+   - An email-only sign-up has no first or last name, so that user shows as "Neighbor" until a name is added in the profile (avatar menu > **Manage account**). The new name appears on the next page load.
+   - The Clerk page https://dashboard.clerk.com/apps/setup/convex ("Activate Convex integration") is another way to add `aud`. It was not used in testing.
 
 ### 3. Convex
 
@@ -170,7 +174,7 @@ In `.env`, set `CONVEX_HTTP_BASE_URL=https://<deployment>.convex.site` (the `.si
 npm run dev
 ```
 
-Open http://localhost:3000 and sign in. To make yourself an admin, copy your user ID (`user_...`) from the Clerk dashboard. Then run the command below and reload `/dashboard`. The role is recomputed on every sign-in sync.
+Open http://localhost:3000 and sign in. To make yourself an admin, copy your user ID (`user_...`) from the Clerk dashboard. Then run the command below and reload `/dashboard`. Every request checks `ADMIN_CLERK_IDS`, so a change applies at once.
 
 ```bash
 npx convex env set ADMIN_CLERK_IDS user_xxx
@@ -204,6 +208,19 @@ On Windows Git Bash, put `MSYS_NO_PATHCONV=1` in front of the `exec` commands. O
 ```bash
 docker compose exec -e N8N_RUNNERS_BROKER_PORT=5690 n8n n8n execute --id=lendloopOverdue1
 ```
+
+### Try it
+
+1. Start n8n (step 5) **before** the first loan request. If n8n is not running, the loan shows "Notification failed".
+2. Borrowing needs 2 accounts, for example a normal window and a private window. Account A lists a tool in **My Listings**. Account B requests it in **Browse Tools**. Account A approves it in **Incoming Requests**.
+3. Both accounts then see "Notification sent" under the loan.
+4. The UI cannot create a loan in the past, so seed an overdue loan for workflow 02. Use account B's Clerk user ID, or leave the argument out to use a demo borrower:
+
+   ```bash
+   npx convex run devSeed:overdueLoan '{"borrowerClerkId":"user_xxx"}'
+   ```
+
+5. Run workflow 02 (command above). Account B sees "Reminder sent" in **My Requests**. A second run on the same day sends nothing.
 
 ### 6. Tests
 
@@ -249,7 +266,7 @@ The compose file also sets these n8n runtime flags:
    - A user can edit or delete only their own listings, and can approve, decline, or return only loans on their own tools. Admins can delete any listing, view all loans, and set `trustedLender`.
    - Loan status follows a strict state machine: `pending` to `approved` or `declined`, and `approved` to `returned`.
    - Approvals re-check for overlap with other approved loans inside the same serializable transaction. Two overlapping requests therefore cannot both be approved.
-2. **Admin bootstrap from the environment only.** `ADMIN_CLERK_IDS` is read on the server during user sync. The role is recomputed on every sync, and no API can grant admin.
+2. **Admin from the environment only.** The server reads `ADMIN_CLERK_IDS` on every request and ignores the role stored on the user row. Removing an ID revokes admin at once, even before the user signs in again. No API can grant admin.
 3. **Data minimization.**
    - `listPublicAvailableTools` projects to `{ _id, name, category }` at the query layer. Owner, description, and user data never leave the server for anonymous visitors. A test checks the exact keys.
    - LendLoop does not store emails or other Clerk profile data. It stores only a short display name ("Ava K.").
@@ -312,15 +329,16 @@ Results from 2026-11-19, on Windows 11, Node 24.19, Docker 29.8, and n8n 2.48.6.
 | --- | --- | --- |
 | `npx tsc --noEmit` | **PASS** | Root project, including `convex/` and `tests/`. `npx tsc --noEmit -p convex` also passes. |
 | `npm run lint` | **PASS** | No warnings |
-| `npm test` | **PASS** | 44 tests in 4 files: hmac, rbac, idempotency, workflows |
+| `npm test` | **PASS** | 46 tests in 4 files: hmac, rbac, idempotency, workflows |
 | `npm run build` | **PASS** | Run with format-valid placeholder `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, and `NEXT_PUBLIC_CONVEX_URL` passed inline. They are not stored in any file. |
 | Workflow JSON valid + no secrets | **PASS** | Parsed with `JSON.parse`. A scan found no hex secrets, keys, or deployment URLs. The real local test secret appears in no tracked file. |
 | `docker compose config` | **PASS** | |
 | Clean checkout (`npm ci`, then `tsc`, `lint`, `test`, `build` in that order) | **PASS** | Only the files git would commit, so no `.env`, `.env.local`, `.next` or `next-env.d.ts` |
 | Convex deploy (schema, indexes, functions, typecheck) | **PASS** | `npx convex dev --once --typecheck enable` against a local anonymous Convex backend |
 | **Live end-to-end, Convex local backend + n8n in Docker** | **PASS** | Details below |
-| UI in a browser, signed in through Clerk | **NOT TESTED** | Needs real Clerk keys. With a placeholder key, the Clerk middleware redirects to Clerk's handshake, as designed. |
-| Clerk setup steps (integration + name claims) | **NOT TESTED** | Written from the current Clerk and Convex docs and the Convex `UserIdentity` claim mapping. The name fallback logic has a unit test. |
+| Signed-in UI with real Clerk keys (local Convex + n8n) | **PASS (manual)** | Tested by hand with 2 accounts:<br>• sign-in, and the short display name ("First L.")<br>• list a tool, then request, approve and return it, with 3 `sent` n8n write-backs visible on both sides<br>• Admin Panel (All loans, All listings, Lenders) through `ADMIN_CLERK_IDS`<br>• signed out, `/dashboard` redirects to Clerk sign-in |
+| Clerk session token claims (the 4-claim JSON in step 2) | **PASS (manual)** | Set on the Clerk development instance. Convex accepted the token and stored the short name. The "Activate Convex integration" page was not used. |
+| `devSeed:overdueLoan` + workflow 02 (README "Try it") | **PASS** | The README command ran through the Convex CLI. Workflow 02 sent the reminder, and the borrower's **My Requests** showed "Overdue reminder sent (3 day(s) late)". |
 | Convex cloud deployment + tunnel (Mode B) | **NOT TESTED** | Needs a Convex account |
 
 These live end-to-end checks ran against the local Convex backend and real n8n. Users were simulated with `npx convex run --identity`.

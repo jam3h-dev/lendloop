@@ -119,6 +119,19 @@ describe("idempotent write-backs", () => {
     expect((await t.run((ctx) => ctx.db.get(loanId)))?.lastReminderAt).toBeUndefined();
   });
 
+  it("the README demo seed (devSeed:overdueLoan) creates a loan workflow 02 will remind", async () => {
+    const t = newBackend();
+    const loanId = await t.mutation(internal.devSeed.overdueLoan, {});
+    const res = await t.fetch("/api/automation/overdue-loans", { headers: await signedHeaders("") });
+    const body = (await res.json()) as { loans: { loanId: string; daysOverdue: number; recipientDisplayName: string }[] };
+    expect(body.loans).toEqual([
+      expect.objectContaining({ loanId, daysOverdue: 3, recipientDisplayName: "Demo Borrower" }),
+    ]);
+    await expect(t.mutation(internal.devSeed.overdueLoan, { borrowerClerkId: "user_missing" })).rejects.toThrow(
+      /Sign in once first/,
+    );
+  });
+
   it("rejects keys that are missing or bound to another loan", async () => {
     const t = newBackend();
     const loanId = await seedOverdueLoan(t);
